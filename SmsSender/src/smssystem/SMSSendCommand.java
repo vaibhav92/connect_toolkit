@@ -5,7 +5,6 @@ package smssystem;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 
 /**
 @author Vaibhav
@@ -15,8 +14,7 @@ public class SMSSendCommand extends GSMCommand
 {
 private byte[] arrbody;
 private boolean flag_bodysent=false;
-private StringBuffer buff=new StringBuffer();
-   /**
+/**
    @param msg
    @roseuid 4424C9B30028
     */

@@ -15,8 +15,10 @@ import smssystem.GSMDevice;
 public class Main 
 {
 public static GSMDevice gm=null;
+@SuppressWarnings("unused")
 private static SMSReader svr;    
     /** Creates a new instance of Main */
+@SuppressWarnings("unused")
 private static TimerServer svr2;
    
     /**
