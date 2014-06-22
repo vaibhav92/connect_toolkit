@@ -2,13 +2,11 @@
 
 package smssystem;
 
-import javax.comm.SerialPortEventListener;
-import javax.comm.SerialPort;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.IOException;
-import javax.comm.SerialPortEvent;
+import java.io.*;
 import java.util.ArrayList;
+import java.util.Stack;
+
+import jssc.*;
 
 /**
 @author Vaibhav
@@ -16,12 +14,15 @@ import java.util.ArrayList;
  */
 class GSMCommandDispatcher extends Thread implements SerialPortEventListener
 {
-   private ArrayList cmdlist;
+   private static final int BUFFER_SIZE = 1024;//10 MB of pipe
+   private ArrayList<GSMCommand> cmdlist;
+   private Stack<MessageProcessor> m_processingstack;
    private boolean bExit;
-   private InputStreamReader is;
-   private OutputStreamWriter os;
    private GSMDevice device;
    private SerialPort sp;
+   PipedInputStream m_modeminputstream;
+   PipedOutputStream m_modemoutput;
+   byte [] m_readbuffer;
 
    /**
    @param ds
@@ -29,164 +30,237 @@ class GSMCommandDispatcher extends Thread implements SerialPortEventListener
    @throws java.lang.Exception
    @roseuid 4424C24F0014
     */
-   public GSMCommandDispatcher(GSMDevice ds) throws IOException, Exception
-   {super("GSMCommandDispather::"+ds.toString());
-    int rd,flag=0;
-    cmdlist=new ArrayList();
-    device=ds;
-    sp=ds.getPort();
-    os = new OutputStreamWriter(sp.getOutputStream(), "ISO-8859-1");
-    os.write("ate\r");
-    os.flush();
-    is = new InputStreamReader(sp.getInputStream(), "ISO-8859-1");
-    for(rd=is.read(),flag=0;flag<4; rd=is.read())
-            try{if(rd=='O') flag++;
-            if(rd=='K' && flag==1) flag++;
-            if(rd==13 && flag==2) flag++;
-            if(rd==10 && flag==3) break;
-            Thread.sleep(100);
-           }catch(Exception e){e.printStackTrace();return;}
-    System.out.println("**************************");
-    sp.addEventListener(this);
-    sp.notifyOnDataAvailable(true);
-    sp.notifyOnOverrunError(true);
-    sp.notifyOnCTS(true);
-    setPriority(Thread.MIN_PRIORITY);
-    start();
+   public GSMCommandDispatcher(GSMDevice ds) throws IOException, Exception{
+		super("GSMCommandDispather::" + ds.toString());
+		cmdlist = new ArrayList<GSMCommand>();
+		m_modeminputstream= new PipedInputStream(BUFFER_SIZE); 
+		m_modemoutput = new PipedOutputStream(m_modeminputstream);
+		m_readbuffer =  new byte[BUFFER_SIZE]; // allocate the buffer of same size
+		device = ds;
+		cmdlist=new ArrayList<GSMCommand>();
+		m_processingstack=new Stack<MessageProcessor>();
+		sp = new SerialPort(ds.getPort());
+		sp.openPort();
+		sp.setParams(SerialPort.BAUDRATE_9600, SerialPort.DATABITS_8,
+				SerialPort.STOPBITS_1, SerialPort.PARITY_NONE);
+		sp.setFlowControlMode(SerialPort.FLOWCONTROL_XONXOFF_IN
+				| SerialPort.FLOWCONTROL_XONXOFF_OUT);
+		sp.addEventListener(this);
+		System.out.println("**************************");
+		setDaemon(true);
+		setPriority(Thread.MIN_PRIORITY);
+
    }
-
-   /**
-   @roseuid 4424C2940078
-    */
-   public void run()
-   {java.util.Stack stk=new java.util.Stack();
-    java.io.ByteArrayOutputStream bos=new  java.io.ByteArrayOutputStream();
-    boolean cflag=false; //charmode flag;
-    GSMCommand cmd=null;
-    try{outer:
-        while(!bExit)
-           {//if(stk.isEmpty()) 
-            cmd=null;
-            synchronized(cmdlist)
-                    { if(/*cmd!=null||*/cmdlist.size()<=0)
-                            try{System.out.println("Going to sleep");
-                                cmdlist.wait();
-                                if(cmdlist.size()>0)
-                                    cmd=(GSMCommand)cmdlist.remove(0);
-                            System.out.println("Back from sleep");
-                            }catch(Exception e){e.printStackTrace();}
-                       else cmd=(GSMCommand)cmdlist.remove(0);
-                    }
-             if(bExit) continue;
-             stk.clear();
-             cflag=false;  // default to line mode
-             if(cmd==null) stk.push(device);
-             else { System.out.println("Dispatching "+cmd.getCommand());
-                    os.write(cmd.getCommand());
-                    os.write('\r');
-                    os.flush();
-                    if(cmd.getMode()==MessageProcessor.CHAR_MODE)
-                        {System.out.println("Switching to Char Mode");
-                        cflag=true;
-                        }   
-                    stk.push(cmd);
-                  }
-             int lastchar=0;
-             int rd=0;
-             //byte buffer[]=new byte[128];int totread;
-             //String st= "";
-             System.out.println("entring main loop");
-             for(int maxcount=0;!stk.empty();maxcount++)
-                    {  try{Thread.sleep(100);} catch(Exception e){}
-                      /****************************************/
-                      if(maxcount>=100) //break;
-                        synchronized(cmdlist)
-                            { System.out.println("Entering Sleep due to unavilable data for 5 seconds");
-                              try{cmdlist.wait(5000);
-                                 }catch(Exception ee){ee.printStackTrace();}
-                              System.out.println("Data has arrived/timeout");
-                            }/**/
-                      /****************************************/  
-                      if(bExit) break outer;
-                      MessageProcessor mp=(MessageProcessor)stk.peek();
-                      while(is.ready())
-                            { maxcount=0;
-                              try{Thread.sleep(10);} catch(Exception e){}
-                              rd=is.read();
-                              if(cflag) 
-                                {bos.write(rd);
-                                 break;
-                                 }
-                              if(lastchar=='\r')
-                                    if(rd=='\n')
-                                        {lastchar='\n';
-                                         break;
-                                        }
-                                    else
-                                      bos.write('\r');
-                               if(rd!='\r') bos.write(rd);
-                               lastchar=rd;
-                            }
-                      
-                           if(lastchar!='\n' &&cflag==false) continue;
-                           if(bos.size()<=0) continue;
-                           byte []arr=bos.toByteArray();
-                           //System.out.println("Processing :"+new String(arr));
-                           /*is this a message arrival*/
-                           if(arr.length>4 && arr[0]=='+' && arr[1]=='C' && arr[2]=='M' && arr[3]=='T' && arr[4]==':')
-                             mp=device.processLine(arr,os);
-                           else
-                             mp=mp.processLine(arr,os);
-                           stk.pop();
-                           if(mp!=null) stk.push(mp);
-                           bos.reset();
-                    }
-
-           }
-         is.close();
-         os.close();
-        }catch(Exception e){e.printStackTrace();}
+   
+   /* Pushes an entry to the processing stack */
+   void pushToProcessingStack(MessageProcessor processor) {
+		   m_processingstack.push(processor);
    }
+   
 
-   /**
-   @param cmd
-   @roseuid 4424C2B103AC
-    */
-   public void addCommand(GSMCommand cmd)
-   {  synchronized(cmdlist)
-            { cmdlist.add(cmd);
-              cmdlist.notify();
-            } System.out.println("Added Command "+cmd.getCommand());
+	/**
+	 * @roseuid 4424C2940078
+	 */
+	public void run() {
+		/* MessageProcessor processor = null; */
+		int readbuffer_index = 0, consumed = 0, data_available = 0;
+		while (!bExit) {
+			/* Fetch the availalble data first */
+			try {
+				data_available = m_modeminputstream.available();
+			} catch (Exception e) {
+				System.out.println("Unable to calculate available data " + e.toString());
+				try {Thread.sleep(1000);} catch (Exception ee) {}
+				continue;
+			}
+			/* Pass the data to the current processor */
+			if (!m_processingstack.isEmpty()) {
+				try {
+					/* get the current processor */
+					MessageProcessor processor = m_processingstack.peek();
+					/* if some data available then read it */
+					if (data_available > 0) {
+						int space_left = m_readbuffer.length - readbuffer_index, read;
+						int datatocopy = ((data_available < space_left) ? data_available : space_left);
+						read = m_modeminputstream.read(m_readbuffer, readbuffer_index, datatocopy);
+						/* Check for end/empty of stream */
+						if (read <= 0) {
+							if (read < 0) bExit = true; /* Check for error */
+							continue;
+						}
+						/* Update the stream index counter */
+						readbuffer_index += read;
+					}
+					/* initially no bytes are consumes */
+					consumed = 0;
+					/* Do we need to send lines to this command */
+					if (processor.getMode() == MessageProcessor.LINE_MODE) {
+						int index;
+						/* look for line separator '\r\n' inside the buffer */
+						for (index = 1; index < readbuffer_index; ++index) {
+							if (m_readbuffer[index] == '\n' && m_readbuffer[index - 1] == '\r')
+								break;
+						}
+						/* Check if a line was found */
+						if (index >= readbuffer_index) {
+							/* Still not enough data for a line */
+							Thread.sleep(1000);
+							/* Wait for some more data to come in */
+							continue;
+						}
+						/* Found a line ask the processor to process it */
+						System.out.println("Received a line " + new String(m_readbuffer, 0, index - 1));
+						m_processingstack.pop();
+						consumed = processor.processLine(this, m_readbuffer, 0, index - 1);
+						assert(consumed<index);
+						/*
+						 * check if entire line was consumed. If yes then we
+						 * have consumed two more bytes
+						 */
+						if (consumed == (index - 1)) {
+							consumed = index + 1;
+						}
+
+					} else {
+						/*
+						 * Char mode then simply pass the entire buffer to the
+						 * processor
+						 */
+						m_processingstack.pop();
+						consumed = processor.processLine(this, m_readbuffer, 0, readbuffer_index);
+					}
+					/* update the array is some data is consumed */
+					if (consumed > 0) {
+						System.arraycopy(m_readbuffer, consumed, m_readbuffer, 0, readbuffer_index - consumed);
+						readbuffer_index -= consumed;
+					}
+					/* restart the parsing */
+					continue;
+				} catch (Exception e) {
+					e.printStackTrace();
+					continue;
+				}
+
+			} else if (data_available > 0) { /*
+											 * Check for unsolicited responses
+											 */
+				/* push a new UnsolicitedResponse to the processing stack */
+				pushToProcessingStack(new UnsolicitedReponseCommand(device));
+				continue;
+			} else {
+				/* issue a command if available */
+				GSMCommand cmd;
+				/* reset the index */
+				readbuffer_index = 0;
+				synchronized (cmdlist) {
+					try {
+						if (cmdlist.isEmpty()) { /* Empty command list */
+							System.out.println("Going to sleep");
+							cmdlist.wait(); /* Wait for event */
+							continue; /* Go back to the start of the loop */
+						} else {
+							cmd = cmdlist.remove(0); /* Get the new command */
+						}
+					} catch (Exception e) {
+						e.printStackTrace();
+						continue; /* Go back to the start of the loop */
+					}
+				}
+				/* Issue the command to the modem */
+				byte[] cmdbytes = cmd.getCommand();
+				if (cmdbytes == null) {
+					System.out.println("Null command output");
+					continue;
+				}
+				/* copy the cmd-bytes to the read buffer */
+				System.arraycopy(cmdbytes, 0, m_readbuffer, 0, cmdbytes.length);
+				m_readbuffer[cmdbytes.length] = '\r';
+				m_readbuffer[cmdbytes.length + 1] = '\n';
+				try {
+					writeToSerialPort(m_readbuffer, 0, cmdbytes.length + 2);
+					/*
+					 * push this command to the processing stack so that it
+					 * recives its output
+					 */
+					pushToProcessingStack(cmd);
+				} catch (Exception e) {
+					System.out.print("Unable to issue Command " + new String(cmdbytes));
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+
+	/**
+	 * @param cmd
+	 * @roseuid 4424C2B103AC
+	 */
+	public void addCommand(GSMCommand cmd) {
+		synchronized (cmdlist) {
+			cmdlist.add(cmd);
+			cmdlist.notify();
+		}
+		System.out.println("Added Command " + new String(cmd.getCommand()));
+	}
+
+	/**
+	 * @roseuid 4424C2D8000A
+	 */
+	public void shutDown() {
+		bExit = true;
+		synchronized (cmdlist) {
+			cmdlist.notify();
+		}
+	}
+
+	/**
+	 * @param arg0
+	 * @roseuid 4424CAA002F8
+	 */
+	public void serialEvent(SerialPortEvent arg0) {
+		try {
+			switch (arg0.getEventType()) {
+			case (SerialPortEvent.RXCHAR): {/* some data is available */
+				/* Fetch the data from the port */
+				byte[] data = sp.readBytes(arg0.getEventValue());
+				m_modemoutput.write(data, 0, data.length);
+				System.out.println("Data Arrival:"
+						+ new String(data, "ISO-8859-1"));
+				m_modemoutput.flush();
+				/* Notify the cmd processor thread aboute it */
+				synchronized (cmdlist) {
+					cmdlist.notify();
+				}
+			}break;
+			case SerialPortEvent.CTS:
+				synchronized (cmdlist) {
+					cmdlist.notify();
+				}break;
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+
+	}
+   
+   /* Writes a string to the serial port */
+   public void writeToSerialPort(String str) throws Exception {
+	   byte []  brr = str.getBytes("ISO-8859-1");
+	   writeToSerialPort(brr);
    }
-
-   /**
-   @roseuid 4424C2D8000A
-    */
-   public void shutDown()
-   {  bExit=true;
-      synchronized(cmdlist)
-            {cmdlist.notify();}
+   
+   /* Writes a byte array to the serial port */
+   public void writeToSerialPort(byte [] barr) throws Exception {
+	   writeToSerialPort(barr,0,barr.length);
    }
-
-   /**
-   @param arg0
-   @roseuid 4424CAA002F8
-    */
-   public void serialEvent(SerialPortEvent arg0)
-   { switch(arg0.getEventType())
-        {case(SerialPortEvent.DATA_AVAILABLE):
-                synchronized(cmdlist){
-                           sp.notifyOnDataAvailable(true);
-                           cmdlist.notify();
-                           }break;
-         case SerialPortEvent.CTS:
-                 synchronized(cmdlist){
-                                cmdlist.notify();
-                            }break;
-         case SerialPortEvent.OE :
-                System.out.println("Buffer overRun");
-                break;
-
-       }
+   
+   /* Writes a string to the serial port */
+   public void writeToSerialPort(byte [] barr, int offset, int length) throws Exception {
+   	   synchronized(sp) {
+   		   for(int index=0;index<length;++index) {
+			   sp.writeByte(barr[offset+index]);
+			   Thread.sleep(1);
+		   }
+	   }
    }
 }

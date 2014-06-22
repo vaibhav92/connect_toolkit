@@ -2,6 +2,9 @@
 
 package smssystem;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 
 /**
@@ -10,19 +13,19 @@ import java.io.OutputStreamWriter;
  */
 public class SMSSendCommand extends GSMCommand
 {
-private byte[] arr;
-private int parr=0;
-private boolean flag=false;
-private int lastchar=0;
+private byte[] arrbody;
+private boolean flag_bodysent=false;
 private StringBuffer buff=new StringBuffer();
    /**
    @param msg
    @roseuid 4424C9B30028
     */
-   public SMSSendCommand(SMSMessage msg)
-   { super("at+cmgs=\"" +msg.getPhoneNumber().trim()+"\"");
-     arr=msg.getMessage().getBytes();
-     parr=0;
+   public SMSSendCommand(GSMDevice device, SMSMessage msg){
+	 super(device, "at+cmgs=\"" +msg.getPhoneNumber().trim()+"\"");
+     byte [] body=msg.getMessage().getBytes();
+     arrbody = new byte[body.length+1];
+     System.arraycopy(body, 0, arrbody, 0, body.length);
+     arrbody[body.length] = 26; /* ^z char at the end of the body */
    }
 
    /**
@@ -31,62 +34,56 @@ private StringBuffer buff=new StringBuffer();
    @return smsservice.GSMCommand
    @roseuid 4424E348008C
     */
-   public MessageProcessor processLine(byte[] dat, OutputStreamWriter os)
-   {
-   //System.out.println("SMSSEND--");
-   //System.out.print("{");
-   //System.out.print((int)dat[0]);
-   //System.out.println(","+dat[0]+"}");
-    
-    if(flag==false)
-        { if(lastchar=='>' && dat[0]==' ')
-            try{ System.out.println("Sending Data");
-                for(;parr< arr.length;parr++)
-                   {
-                    if(arr[parr]=='\r' && parr<arr.length && arr[parr+1]=='\n')
-                                {os.write('\r');
-                                 os.write('\n');
-                                 //System.out.println("Wrote <newline>");
-                                 parr+=2;
-                                 break;
-                                }
-                    //System.out.println("Wrote :"+arr[parr]);
-                    os.write(arr[parr]);
-                   }
-                if(parr>=arr.length) 
-                    {os.write(26);flag=true;
-                    System.out.println("Writing Complete waiting for reply:");
-                    }
-                os.flush();
-            }catch(Exception e){e.printStackTrace();}
-        lastchar=dat[0];
-        return this;  
-        }
-    
-    if(lastchar=='\r' && dat[0]=='\n') //line complete
-        { String st=buff.toString();
-          System.out.println(st);
-          if(st.startsWith("+CMGS:"))
-            {lastchar=0;
-             buff.delete(0, buff.length());
-             return this;
-            }
-          if(st.startsWith("+CMS"))
-            {System.out.println("Error  Sending Message: "+new String(arr));
-            return null;}
-          if(st.startsWith("OK"))
-              {System.out.println("Successfully Sent Message: "+new String(arr));
-               return null;
-              }
-          buff.delete(0,buff.length());
-          return this;
-        }
-    else
-     if(dat[0]!='\r')   buff.append((char)dat[0]);
-    lastchar=dat[0];
-    return this;
-   }
+	public int processLine(GSMCommandDispatcher dispatcher,byte[] data,int offset,int length) {
+
+		if (!flag_bodysent) { /* we havent sent the sms body yet */
+			try {
+				/* Create a buffered reader with all the data*/
+				BufferedReader br = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(data,offset,length)));
+				for(String ln=br.readLine();ln!=null;ln=br.readLine()) {
+					if (ln.trim().length()==0) continue; /* skip empty lines */
+					else if (ln.trim().equals(">")) { /* sms body can now be sent */
+						dispatcher.writeToSerialPort(arrbody);
+						flag_bodysent = true;
+						System.out.println("Writing Complete waiting for reply");
+					}
+				}
+			}catch(Exception e){
+				System.out.println("Unable to process the SMS Send Command "+e.toString());
+				e.printStackTrace();
+			}
+			/* ask dispatcher to call us back */
+			dispatcher.pushToProcessingStack(this);
+			return 0; /* we show nothing as consumed so that we get it back */
+		} else {
+			/* Start parsing the lines now */
+			String resp = decodeString(data,offset,length).trim();
+			if (resp.length() == 0) {
+				/* ask dispatcher to call us back */
+				dispatcher.pushToProcessingStack(this);
+				return length; 
+			} else if (resp.equals(">")) {
+				/* ask dispatcher to call us back */
+				dispatcher.pushToProcessingStack(this);
+				return length; 
+			} else if (resp.startsWith("+CMGS:")) { /* Message Sent Indication */
+				/* ask dispatcher to call us back */
+				dispatcher.pushToProcessingStack(this);
+				return length; 
+			} else if (resp.equals("OK")) { /* Transaction Complete */
+				System.out.println("Message Sent Successfully");
+				return length;
+			} else if (resp.equals("ERROR")) { /* Transaction Complete */
+				System.out.println("Unable to send the message");
+				return length;
+			} else { /* some unsolicated reply */
+				pushBackUnsolicited(dispatcher);
+				return 0;
+			}
+		}
+	}
+		
 
     public int getMode() 
-        {return CHAR_MODE;}
+        {return flag_bodysent?LINE_MODE:CHAR_MODE;}
 }

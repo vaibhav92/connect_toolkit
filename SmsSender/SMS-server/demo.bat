@@ -1,1 +1,0 @@
-@java -jar smsdemo.jar COM4

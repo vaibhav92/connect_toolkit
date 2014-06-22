@@ -2,154 +2,116 @@
 
 package smssystem;
 
-import javax.comm.CommPortIdentifier;
-import javax.comm.SerialPort;
-import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 
+import jssc.*;
+
 /**
-@author Vaibhav
-@version 2.0
+ * @author Vaibhav
+ * @version 2.0
  */
-public class GSMDevice implements MessageProcessor
-{
-   private ArrayList arrSMSReceivers;
-   private boolean isclosed;
-   private SMSMessage lastmsg;
-   private SerialPort sp;
-   private GSMCommandDispatcher dispatcher;
-   
-   private static String concatenated_sms_delimiter=new String( new byte[]{(byte)0x82,(byte)0x40,(byte)0x20});
-   /**
-   @param strPort
-   @throws java.lang.Exception
-   @roseuid 4424D9BD014A
-    */
-   public GSMDevice(String strPort) throws Exception
-   { arrSMSReceivers=new ArrayList();
-      try{sp=(SerialPort)CommPortIdentifier.getPortIdentifier(strPort).open("SMSApp",2000);
-          // set parameter for serial port
-          sp.setSerialPortParams(19200, SerialPort.DATABITS_8, SerialPort.STOPBITS_1, SerialPort.PARITY_NONE);
+public class GSMDevice {
+	private ArrayList<SMSReceiver> arrSMSReceivers;
+	private boolean isclosed;
+	private GSMCommandDispatcher dispatcher;
+	private String m_serialport;
 
-      System.out.println("open port\n");    // for debugging
-         sp.setFlowControlMode(sp.FLOWCONTROL_RTSCTS_IN|sp.FLOWCONTROL_RTSCTS_OUT);
-         dispatcher=new GSMCommandDispatcher(this);
-         //dispatcher.addCommand(new GSMCommand("ate"));
-         //dispatcher.addCommand(new GSMCommand("atz"));
-         //dispatcher.addCommand(new GSMCommand("ate"));
-         dispatcher.addCommand(new GSMCommand("at+cnmi=2,2,0,0"));
-         dispatcher.addCommand(new GSMCommand("at+cmgf=1"));
-         }catch(Exception e)
-            {isclosed=true;
-             throw e;
-            }
-   }
+	/**
+	 * @param strPort
+	 * @throws java.lang.Exception
+	 * @roseuid 4424D9BD014A
+	 */
+	public GSMDevice(String strPort) throws Exception {
+		arrSMSReceivers = new ArrayList<SMSReceiver>();
+		m_serialport = strPort;
+		String[] arrports = SerialPortList.getPortNames();
+		int index = 0;
+		for (index = 0; index < arrports.length; ++index) {
+			if (arrports[index].equals(strPort.trim()))
+				break;
+		}
+		if (index >= arrports.length)
+			throw new IllegalArgumentException("Invalid Port " + strPort);
+		System.out
+				.println("Creating the Command Dispatcher on Port " + strPort);
+		dispatcher = new GSMCommandDispatcher(this);
 
-   /**
-   @param msg
-   @roseuid 44249D5500DC
-    */
-   public void sendMessage(SMSMessage msg)
-   {
-    if(isclosed) return ;
-    dispatcher.addCommand(new SMSSendCommand(msg));
-   }
+		/* Schedule some standard command */
+		dispatcher.addCommand(new ATECommand(this));
+		dispatcher.addCommand(new GSMCommand(this, "at+cnmi=2,2,0,0"));
+		dispatcher.addCommand(new GSMCommand(this, "at+cmgf=1"));
 
-   /**
-   @param obj
-   @roseuid 4424C05C015E
-    */
-   public void addSMSReceiver(SMSReceiver obj)
-   { if(isclosed) return ;
-     removeSMSReceiver(obj);
-     arrSMSReceivers.add(obj);
-   }
+		System.out.println("Starting the dispatcher thread");
+		/* Start the scheduler thread */
+		dispatcher.start();
+		isclosed = false;
+	}
 
-   /**
-   @param obj
-   @roseuid 4424C087008C
-    */
-   public void removeSMSReceiver(SMSReceiver obj)
-   {if(isclosed) return ;
-    this.arrSMSReceivers.remove(obj);
-   }
+	/**
+	 * @param msg
+	 * @roseuid 44249D5500DC
+	 */
+	public void sendMessage(SMSMessage msg) {
+		if (isclosed)
+			return;
+		dispatcher.addCommand(new SMSSendCommand(this, msg));
+	}
 
-   /**
-   @return javax.comm.SerialPort
-   @roseuid 4424C225003C
-    */
-   public SerialPort getPort()
-   {if(isclosed) return null;
-    return sp;
-   }
+	/**
+	 * @param obj
+	 * @roseuid 4424C05C015E
+	 */
+	public void addSMSReceiver(SMSReceiver obj) {
+		if (isclosed)
+			return;
+		removeSMSReceiver(obj);
+		arrSMSReceivers.add(obj);
+	}
 
-   /**
-   @roseuid 4424C2E70186
-    */
-   public void close()
-   {if(isclosed) return ;
-    isclosed=true;
-    dispatcher.shutDown();
-   }
+	/**
+	 * @param obj
+	 * @roseuid 4424C087008C
+	 */
+	public void removeSMSReceiver(SMSReceiver obj) {
+		if (isclosed)
+			return;
+		this.arrSMSReceivers.remove(obj);
+	}
 
-   /**
-   @param cmd
-   @roseuid 4424E8600154
-    */
-   public void addCommand(GSMCommand cmd)
-   {if(isclosed) return ;
-    dispatcher.addCommand(cmd);
-   }
+	/**
+	 * @return javax.comm.SerialPort
+	 * @roseuid 4424C225003C
+	 */
+	public String getPort() {
+		if (isclosed)
+			return null;
+		return m_serialport;
+	}
 
-   /**
-   @param dat
-   @param os
-   @return smsservice.MessageProcessor
-   @roseuid 4424ED11000A
-    */
-   public MessageProcessor processLine(byte[] dat, OutputStreamWriter os)
-   {
-    String st=new String(dat);
-    System.out.println("Device Line ----- "+st);
-    if(lastmsg!=null)
-        {lastmsg.setMessage(st);
-         System.out.println(st);
-         /*Quick Fix for Concatenated SMS's*/
-         //byte barr[]=st.getBytes();
-         //if(barr.length()>7 && barr[0]=-126 && barr[1]==0x40 && barr[2]==0x32)
-         
-         if(st.startsWith(concatenated_sms_delimiter) && st.length()>7) 
-            {st=st.substring(7);
-             System.out.println("Concatenated SMS Detected.. Truncating to:\n "+st);
-            }
-         /**/
-         java.util.Iterator itr= this.arrSMSReceivers.iterator();
+	/**
+	 * @roseuid 4424C2E70186
+	 */
+	public void close() {
+		if (isclosed)
+			return;
+		isclosed = true;
+		dispatcher.shutDown();
+	}
 
-          while(itr.hasNext())
-                    {SMSReceiver sm=(SMSReceiver) itr.next();
-                     sm.processSMS(lastmsg);
-                     }
-            lastmsg=null;
-            return null;
-         }
-     if(st.startsWith("+CMT:"))
-        { lastmsg=new SMSMessage();
-          int indx= st.indexOf(',');
-          if(indx!=-1)
-                try{
-                  String ph= st.substring(7,indx-1);
-                  lastmsg.setPhoneNumber(ph);
-                }catch(Exception e){e.printStackTrace();}
-        return this;
-        }
-    lastmsg=null;
-    if(st.startsWith("OK") || st.startsWith("ERROR")) return null;
-    if(st.startsWith("RING"))return null;
-    return this;
-   }
-   
-   public int getMode() {
-       return LINE_MODE;
-   }
-   
+	/**
+	 * @param cmd
+	 * @roseuid 4424E8600154
+	 */
+	public void addCommand(GSMCommand cmd) {
+		if (isclosed)
+			return;
+		dispatcher.addCommand(cmd);
+	}
+
+	/* Method used by other classes to broadcast an event */
+	void broadcastSMSReceived(SMSMessage msg) {
+		for (SMSReceiver rcvr : arrSMSReceivers)
+			rcvr.processSMS(msg);
+	}
+
 }
